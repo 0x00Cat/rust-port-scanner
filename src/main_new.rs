@@ -1,40 +1,30 @@
 /// Modernized main entry point using new architecture
 
 use port_scanner::prelude::*;
-use port_scanner::presentation::OutputFormatter;
-use port_scanner::cli::CliInterface; // Legacy CLI
+use port_scanner::presentation::{OutputFormatter, JsonFormatter};
 use std::time::Instant;
+use std::io::{self, Write};
+use std::path::Path;
 use tracing::{info, Level};
 use tracing_subscriber;
 
 fn main() -> anyhow::Result<()> {
-    // Initialize tracing
+    // Initialize tracing with DEBUG level for verbose output
     tracing_subscriber::fmt()
-        .with_max_level(Level::INFO)
+        .with_max_level(Level::DEBUG)
         .with_target(false)
         .init();
 
     info!("Port Scanner v2.0 - Refactored Architecture");
 
-    // Use legacy CLI for now (can be refactored later)
-    let legacy_config = match CliInterface::build_scan_config() {
-        Ok(config) => config,
-        Err(e) => {
-            eprintln!("Configuration error: {}", e);
-            return Ok(());
-        }
-    };
+    // Display banner
+    println!("╔════════════════════════════════════╗");
+    println!("║   Rust Port Scanner v2.0          ║");
+    println!("║   Clean Architecture              ║");
+    println!("╚════════════════════════════════════╝\n");
 
-    // Convert legacy config to new config
-    let config = convert_legacy_config(legacy_config)?;
-
-    // Get output format (legacy way for now)
-    let output_format = CliInterface::get_output_format();
-    let json_path = if output_format == port_scanner::cli::OutputFormat::Json {
-        CliInterface::get_json_output_path(&config.target_ip.to_string())
-    } else {
-        None
-    };
+    // Build config using new architecture
+    let config = build_config_interactive()?;
 
     // Display scan info
     display_scan_info(&config);
@@ -68,60 +58,113 @@ fn main() -> anyhow::Result<()> {
     let open_ports = results.open_ports;
     let closed_ports = results.closed_ports;
 
-    // Output results based on format
-    match output_format {
-        port_scanner::cli::OutputFormat::Text => {
-            display_text_results(&results, duration, total_ports, open_ports, closed_ports);
-        }
-        port_scanner::cli::OutputFormat::Json => {
-            let report = ScanReport::new(&config, results, duration_seconds);
-            
-            if let Some(path) = json_path {
-                let formatter = port_scanner::presentation::JsonFormatter;
-                match formatter.write_to_file(&report, std::path::Path::new(&path)) {
-                    Ok(_) => {
-                        println!("\n✓ JSON report written to: {}", path);
-                        println!("Scan completed in {:.2?}", duration);
-                    }
-                    Err(e) => {
-                        eprintln!("\n✗ Failed to write JSON file: {}", e);
-                        if let Ok(json) = formatter.format(&report) {
-                            println!("\nJSON output:\n{}", json);
-                        }
-                    }
-                }
+    // Ask for output format
+    print!("\nSave results to JSON file? (y/n): ");
+    io::stdout().flush()?;
+    let stdin = io::stdin();
+    let mut line = String::new();
+    stdin.read_line(&mut line)?;
+    let save_json = line.trim().to_lowercase() == "y";
+
+    if save_json {
+        let report = ScanReport::new(&config, results.clone(), duration_seconds);
+        let filename = ScanReport::default_filename(&config.target_ip.to_string(), OutputFormat::Json);
+        let path = Path::new(&filename);
+        
+        match JsonFormatter.write_to_file(&report, path) {
+            Ok(_) => {
+                println!("\n✓ JSON report saved to: {}", filename);
+            }
+            Err(e) => {
+                eprintln!("\n✗ Failed to save JSON file: {}", e);
             }
         }
     }
 
+    // Output results to console
+    display_text_results(&results, duration, total_ports, open_ports, closed_ports);
+
     Ok(())
 }
 
-/// Convert legacy config to new config
-fn convert_legacy_config(legacy: port_scanner::scanner::ScanConfig) -> anyhow::Result<ScanConfig> {
-    let mode = match legacy.scan_mode {
-        port_scanner::scanner::ScanMode::Range { start, end } => {
+/// Build scan configuration interactively
+fn build_config_interactive() -> anyhow::Result<ScanConfig> {
+    use std::io::{self, BufRead};
+    
+    let stdin = io::stdin();
+    let mut lines = stdin.lock().lines();
+
+    // Get target IP
+    print!("Enter target IP address (e.g., 127.0.0.1): ");
+    io::stdout().flush()?;
+    let target_input = lines.next()
+        .ok_or_else(|| anyhow::anyhow!("No input provided"))??;
+    let target_ip = target_input.trim().parse()
+        .map_err(|e| anyhow::anyhow!("Invalid IP address format: {}", e))?;
+
+    // Get scan mode
+    println!("\nScan modes:");
+    println!("  1. Common ports (21, 22, 23, 25, 53, 80, 110, 143, 443, 445, 3306, 3389, 8080)");
+    println!("  2. Port range");
+    println!("  3. Custom port list");
+    print!("Select scan mode (1-3): ");
+    io::stdout().flush()?;
+    let mode_choice = lines.next()
+        .ok_or_else(|| anyhow::anyhow!("No input provided"))??;
+
+    let mode = match mode_choice.trim() {
+        "1" => ScanMode::CommonPorts,
+        "2" => {
+            print!("Enter port range (e.g., 1-1000): ");
+            io::stdout().flush()?;
+            let range_input = lines.next()
+                .ok_or_else(|| anyhow::anyhow!("No input provided"))??;
+            let parts: Vec<&str> = range_input.trim().split('-').collect();
+            if parts.len() != 2 {
+                return Err(anyhow::anyhow!("Invalid range format"));
+            }
+            let start = parts[0].parse()?;
+            let end = parts[1].parse()?;
             ScanMode::Range { start, end }
         }
-        port_scanner::scanner::ScanMode::CommonPorts => {
-            ScanMode::CommonPorts
+        "3" => {
+            print!("Enter ports (comma-separated, e.g., 80,443,8080): ");
+            io::stdout().flush()?;
+            let ports_input = lines.next()
+                .ok_or_else(|| anyhow::anyhow!("No input provided"))??;
+            let ports: Result<Vec<u16>, _> = ports_input
+                .trim()
+                .split(',')
+                .map(|p| p.trim().parse())
+                .collect();
+            ScanMode::CustomList(ports?)
         }
-        port_scanner::scanner::ScanMode::CustomList(ports) => {
-            ScanMode::CustomList(ports)
-        }
+        _ => return Err(anyhow::anyhow!("Invalid selection")),
     };
 
+    // Ask for service version detection
+    print!("\nEnable service version detection? (y/n): ");
+    io::stdout().flush()?;
+    let detect_versions_input = lines.next()
+        .ok_or_else(|| anyhow::anyhow!("No input provided"))??;
+    let detect_versions = detect_versions_input.trim().to_lowercase() == "y";
+
+    // Ask for OS detection
+    print!("Enable OS detection (SMB only)? (y/n): ");
+    io::stdout().flush()?;
+    let detect_os_input = lines.next()
+        .ok_or_else(|| anyhow::anyhow!("No input provided"))??;
+    let detect_os = detect_os_input.trim().to_lowercase() == "y";
+
+    // Build config
     Ok(ScanConfigBuilder::new()
-        .target(legacy.target_ip)
+        .target(target_ip)
         .scan_mode(mode)
-        .timeout(legacy.timeout)
-        .verbose(legacy.verbose)
-        .detect_versions(legacy.detect_versions)
-        .detect_os(legacy.detect_os)
-        .parallel(legacy.parallel)
-        .thread_count(legacy.thread_count)
-        .randomize_source_port(legacy.randomize_source_port)
-        .delay_between_probes(legacy.delay_between_probes)
+        .timeout(std::time::Duration::from_millis(500))
+        .verbose(true)
+        .detect_versions(detect_versions)
+        .detect_os(detect_os)
+        .parallel(true)
         .build()?)
 }
 
@@ -154,7 +197,7 @@ fn display_scan_info(config: &ScanConfig) {
 
 /// Display text results
 fn display_text_results(
-    results: &ScanResults, 
+    results: &ScanResults,
     duration: std::time::Duration,
     total_ports: usize,
     open_ports: usize,
@@ -166,6 +209,38 @@ fn display_text_results(
     println!("Closed:      {}", closed_ports);
     println!("Filtered:    {}", results.filtered_ports);
     println!("Errors:      {}", results.error_ports);
+    
+    // Display open ports with details
+    if open_ports > 0 {
+        println!("\n=== OPEN PORTS ===");
+        for result in &results.results {
+            if result.status.is_open() {
+                print!("Port {}: ", result.port);
+                
+                // Display service version if available
+                if let Some(ref version) = result.service_version {
+                    print!("{}", version.service_name);
+                    if let Some(ref ver) = version.version {
+                        print!(" {}", ver);
+                    }
+                    println!();
+                    if let Some(ref banner) = version.banner {
+                        if !banner.is_empty() {
+                            println!("  Banner: {}", banner);
+                        }
+                    }
+                } else {
+                    println!("Open");
+                }
+                
+                // Display OS info if available
+                if let Some(ref os_info) = result.os_info {
+                    println!("  OS: {}", os_info.summary());
+                }
+            }
+        }
+    }
+    
     println!("\n=== PERFORMANCE ===");
     println!("Duration:    {:.2?}", duration);
     if duration.as_secs_f64() > 0.0 {

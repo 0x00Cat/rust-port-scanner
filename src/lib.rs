@@ -44,41 +44,19 @@ pub mod scanning;
 pub mod application;
 pub mod presentation;
 
-// Legacy modules for backward compatibility
-pub mod scanner;
-pub mod port_info;
-pub mod cli;
-pub mod reporter;
-pub mod version_detector;
-pub mod smb_fingerprint;
-pub mod json_output;
-
 // Re-exports for convenience
 pub use errors::{ScanError, ConfigError, DetectionError, FormatterError};
-pub use domain::{Port, PortStatus, PortScanResult, ScanResults, ServiceInfo};
-pub use domain::ServiceVersion as DomainServiceVersion;
-pub use domain::OSInfo as DomainOSInfo;
+pub use domain::{Port, PortStatus, PortScanResult, ScanResults, ServiceInfo, ServiceVersion, OSInfo};
 pub use scanning::{ScanConfig, ScanConfigBuilder, ScanMode};
-pub use application::PortScanner as NewPortScanner;
-pub use application::VersionDetector as NewVersionDetector;
-pub use application::SMBFingerprinter as NewSMBFingerprinter;
+pub use application::{PortScanner, VersionDetector, SMBFingerprinter};
 pub use presentation::{OutputFormat, OutputFormatter, OutputFormatterFactory, ScanReport};
-
-// Legacy re-exports
-pub use scanner::ScanConfig as LegacyScanConfig;
-pub use port_info::ServiceDatabase;
 
 /// Prelude module for convenient imports
 pub mod prelude {
-    pub use crate::domain::{Port, PortStatus, PortScanResult, ScanResults};
+    pub use crate::domain::{Port, PortStatus, PortScanResult, ScanResults, ServiceVersion, OSInfo};
     pub use crate::scanning::{ScanConfig, ScanConfigBuilder, ScanMode};
-    pub use crate::application::PortScanner;
+    pub use crate::application::{PortScanner, VersionDetector, SMBFingerprinter};
     pub use crate::presentation::{OutputFormat, OutputFormatterFactory, ScanReport};
     pub use crate::errors::{ScanError, ConfigError};
     pub use anyhow;
 }
-
-pub use cli::CliInterface;
-pub use reporter::Reporter;
-pub use version_detector::{VersionDetector, ServiceVersion};
-pub use smb_fingerprint::{SMBFingerprinter, OSInfo};

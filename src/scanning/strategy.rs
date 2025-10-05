@@ -7,6 +7,7 @@ use tracing::{debug, trace};
 use crate::domain::{Port, PortStatus, PortScanResult};
 use crate::scanning::config::ScanConfig;
 use crate::infrastructure::{NetworkConnector, TcpConnector, network_utils};
+use crate::application::{VersionDetector, SMBFingerprinter};
 
 /// Trait for different scanning strategies
 pub trait ScanStrategy: Send + Sync {
@@ -42,11 +43,38 @@ impl ScanStrategy for StandardScan {
         let socket = SocketAddr::new(target_ip, port);
         
         trace!("Standard scanning port {} on {}", port, target_ip);
-        
+
         match self.connector.connect(&socket, config.timeout) {
             Ok(_) => {
                 debug!("Port {} is OPEN", port);
-                PortScanResult::new(port, PortStatus::Open)
+                let mut result = PortScanResult::new(port, PortStatus::Open);
+                
+                // Perform service version detection if enabled
+                if config.detect_versions {
+                    debug!("Service detection enabled - attempting on port {}", port);
+                    let version = VersionDetector::detect_version(&socket, config.timeout);
+                    if version.service_name != "Unknown" {
+                        let version_str = version.version.as_deref().unwrap_or("unknown version");
+                        debug!("Detected service on port {}: {} {}", port, version.service_name, version_str);
+                        result = result.with_version(version);
+                    } else {
+                        trace!("No service detected on port {}", port);
+                    }
+                }
+                
+                // Perform OS detection if enabled and port is 445 (SMB)
+                if config.detect_os && port == 445 {
+                    debug!("OS detection enabled - attempting SMB fingerprinting on port {}", port);
+                    let os_info = SMBFingerprinter::fingerprint(&socket, config.timeout);
+                    if os_info.os_name.as_ref().map_or(false, |n| n != "Unknown") {
+                        debug!("OS detected via SMB: {}", os_info.summary());
+                        result = result.with_os_info(os_info);
+                    } else {
+                        debug!("OS detection on port {} did not yield results", port);
+                    }
+                }
+                
+                result
             }
             Err(ref e) if network_utils::is_connection_refused(e) => {
                 trace!("Port {} is CLOSED", port);
@@ -66,9 +94,7 @@ impl ScanStrategy for StandardScan {
     fn name(&self) -> &'static str {
         "Standard TCP Connect"
     }
-}
-
-/// Stealth scan with source port randomization
+}/// Stealth scan with source port randomization
 pub struct StealthScan {
     connector: Box<dyn NetworkConnector>,
 }
@@ -112,7 +138,34 @@ impl ScanStrategy for StealthScan {
         match self.connector.connect(&socket, config.timeout) {
             Ok(_) => {
                 debug!("Port {} is OPEN (stealth)", port);
-                PortScanResult::new(port, PortStatus::Open)
+                let mut result = PortScanResult::new(port, PortStatus::Open);
+                
+                // Perform service version detection if enabled
+                if config.detect_versions {
+                    debug!("Service detection enabled - attempting on port {} (stealth)", port);
+                    let version = VersionDetector::detect_version(&socket, config.timeout);
+                    if version.service_name != "Unknown" {
+                        let version_str = version.version.as_deref().unwrap_or("unknown version");
+                        debug!("Detected service on port {}: {} {}", port, version.service_name, version_str);
+                        result = result.with_version(version);
+                    } else {
+                        trace!("No service detected on port {}", port);
+                    }
+                }
+                
+                // Perform OS detection if enabled and port is 445 (SMB)
+                if config.detect_os && port == 445 {
+                    debug!("OS detection enabled - attempting SMB fingerprinting on port {} (stealth)", port);
+                    let os_info = SMBFingerprinter::fingerprint(&socket, config.timeout);
+                    if os_info.os_name.as_ref().map_or(false, |n| n != "Unknown") {
+                        debug!("OS detected via SMB: {}", os_info.summary());
+                        result = result.with_os_info(os_info);
+                    } else {
+                        debug!("OS detection on port {} did not yield results", port);
+                    }
+                }
+                
+                result
             }
             Err(ref e) if network_utils::is_connection_refused(e) => {
                 trace!("Port {} is CLOSED", port);

@@ -18,20 +18,24 @@ impl SMBFingerprinter {
     }
 
     pub fn fingerprint(socket: &SocketAddr, timeout: Duration) -> OSInfo {
-        debug!("Attempting SMB fingerprinting on {}", socket);
+        debug!("=== Starting SMB OS Fingerprinting ===");
+        debug!("Target: {}", socket);
+        debug!("Timeout: {:?}", timeout);
         
         match TcpStream::connect_timeout(socket, timeout) {
             Ok(mut stream) => {
+                debug!("Successfully connected to SMB port");
                 let _ = stream.set_read_timeout(Some(Duration::from_millis(SMB_TIMEOUT_MS)));
                 let _ = stream.set_write_timeout(Some(timeout));
                 
                 // Send SMB negotiate packet
                 let negotiate_packet = Self::build_smb_negotiate_packet();
                 
-                trace!("Sending SMB negotiate packet ({} bytes)", negotiate_packet.len());
+                debug!("Sending SMB negotiate packet ({} bytes)", negotiate_packet.len());
+                trace!("Packet data: {:02x?}", &negotiate_packet[..std::cmp::min(32, negotiate_packet.len())]);
                 
                 if stream.write_all(&negotiate_packet).is_err() {
-                    warn!("Failed to send SMB negotiate packet");
+                    warn!("Failed to send SMB negotiate packet to {}", socket);
                     return OSInfo::new();
                 }
                 
@@ -39,15 +43,22 @@ impl SMBFingerprinter {
                 let mut buffer = vec![0u8; SMB_BUFFER_SIZE];
                 match stream.read(&mut buffer) {
                     Ok(n) if n > 0 => {
-                        trace!("Received SMB response ({} bytes)", n);
-                        Self::parse_smb_response(&buffer[..n])
+                        debug!("Received SMB response ({} bytes)", n);
+                        trace!("Response data: {:02x?}", &buffer[..std::cmp::min(64, n)]);
+                        let os_info = Self::parse_smb_response(&buffer[..n]);
+                        if os_info.is_detected() {
+                            debug!("Successfully detected OS: {}", os_info.summary());
+                        } else {
+                            debug!("Could not determine OS from SMB response");
+                        }
+                        os_info
                     }
                     Ok(_) => {
-                        warn!("Received empty SMB response");
+                        warn!("Received empty SMB response from {}", socket);
                         OSInfo::new()
                     }
                     Err(e) => {
-                        warn!("Failed to read SMB response: {}", e);
+                        warn!("Failed to read SMB response from {}: {}", socket, e);
                         OSInfo::new()
                     }
                 }
@@ -82,7 +93,10 @@ impl SMBFingerprinter {
     }
 
     fn parse_smb_response(data: &[u8]) -> OSInfo {
+        debug!("Parsing SMB response ({} bytes)", data.len());
+        
         if data.len() < 32 {
+            debug!("SMB response too short (minimum 32 bytes required)");
             return OSInfo::new();
         }
         
@@ -90,21 +104,27 @@ impl SMBFingerprinter {
         
         // Check for SMB2/3
         if data.len() > 4 && &data[4..8] == b"\xfeSMB" {
-            trace!("Detected SMB2/3 protocol");
+            debug!("Detected SMB2/3 protocol signature");
+            trace!("SMB header: {:02x?}", &data[4..8]);
             os_info = os_info.with_smb_version("SMB 2.x/3.x");
             
             // Modern Windows (7+)
+            debug!("Identified as modern Windows (7 or later)");
             os_info = os_info
                 .with_os_name("Windows")
                 .with_os_version("7 or later");
         }
         // Check for SMB1
         else if data.len() > 4 && &data[4..8] == b"\xffSMB" {
-            trace!("Detected SMB1 protocol");
+            debug!("Detected SMB1 protocol signature");
+            trace!("SMB header: {:02x?}", &data[4..8]);
             os_info = os_info.with_smb_version("SMB 1.0");
             
             // Likely older Windows or Samba
+            debug!("Identified as Windows/Samba (SMB1)");
             os_info = os_info.with_os_name("Windows/Samba");
+        } else {
+            debug!("Unknown SMB response signature: {:02x?}", &data[4..std::cmp::min(8, data.len())]);
         }
         
         os_info

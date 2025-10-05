@@ -1,4 +1,0 @@
-Port,Status,Service,Version,Protocol,Banner,OS_Name,OS_Version,OS_Build,SMB_Version,Computer_Name,Domain
-80,OPEN,,,,"",,,,,,
-3000,FILTERED,,,,"",,,,,,
-443,FILTERED,,,,"",,,,,,

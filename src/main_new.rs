@@ -12,7 +12,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tracing::{info, debug, Level};
 use tracing_subscriber;
-use clap::{Parser, ValueEnum};
+use clap::{Parser, ValueEnum, ArgGroup};
 
 /// A fast and modular port scanner written in Rust
 #[derive(Parser, Debug)]
@@ -20,17 +20,22 @@ use clap::{Parser, ValueEnum};
 #[command(author = "Your Name")]
 #[command(version = "2.0.0")]
 #[command(about = "A production-grade port scanner with service detection and OS fingerprinting", long_about = None)]
+#[command(group(
+    ArgGroup::new("port-spec")
+        .required(false)
+        .args(["ports", "common"])
+))]
 struct Cli {
     /// Target IP address to scan
     #[arg(short, long, value_name = "IP")]
     target: Option<String>,
 
     /// Ports to scan (e.g., "80,443,8080" or "1-1000")
-    #[arg(short, long, value_name = "PORTS")]
+    #[arg(short, long, value_name = "PORTS", group = "port-spec")]
     ports: Option<String>,
 
     /// Use common ports preset
-    #[arg(short, long)]
+    #[arg(short, long, group = "port-spec")]
     common: bool,
 
     /// Enable service version detection
@@ -80,6 +85,10 @@ struct Cli {
     /// Show detailed info only for open ports (filtered/closed ports shown as summary)
     #[arg(long)]
     open_only: bool,
+
+    /// Enable debug logging (shows detailed trace information)
+    #[arg(short = 'd', long)]
+    debug: bool,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
@@ -95,9 +104,18 @@ enum OutputFormatArg {
 }
 
 fn main() -> anyhow::Result<()> {
-    // Initialize tracing with DEBUG level for verbose output
+    // Parse CLI args early to get debug flag
+    let cli = Cli::parse();
+    
+    // Initialize tracing based on debug flag
+    let log_level = if cli.debug {
+        Level::DEBUG
+    } else {
+        Level::WARN  // Only show warnings and errors by default
+    };
+    
     tracing_subscriber::fmt()
-        .with_max_level(Level::DEBUG)
+        .with_max_level(log_level)
         .with_target(false)
         .init();
 
@@ -109,10 +127,7 @@ fn main() -> anyhow::Result<()> {
     println!("║   Clean Architecture              ║");
     println!("╚════════════════════════════════════╝\n");
 
-    // Parse command-line arguments
-    let cli = Cli::parse();
-    
-    // Store output preferences
+    // Store output preferences (cli already parsed above)
     let output_format = cli.format;
     let output_file = cli.output_file.clone();
     let open_only = cli.open_only;

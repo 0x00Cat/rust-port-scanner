@@ -28,7 +28,7 @@ harness = false
 
 [[bin]]
 name = "port-scanner"
-path = "src/main.rs"
+path = "src/main_new.rs"
 
 [lib]
 name = "port_scanner"

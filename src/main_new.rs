@@ -1,7 +1,7 @@
 /// Modernized main entry point using new architecture
 
 use port_scanner::prelude::*;
-use port_scanner::presentation::{ProgressObserver, MetricsCollector, ScanObserver};
+use port_scanner::presentation::OutputFormatter;
 use port_scanner::cli::CliInterface; // Legacy CLI
 use std::time::Instant;
 use tracing::{info, Level};
@@ -42,33 +42,36 @@ fn main() -> anyhow::Result<()> {
     // Create scanner
     let scanner = PortScanner::new(config.clone())?;
 
-    // Create observers
-    let mut progress = ProgressObserver::new(config.verbose);
-    let mut metrics = MetricsCollector::new();
-
+    // Create progress observer for display
+    let verbose = config.verbose;
+    
     // Start timing
     let start_time = Instant::now();
-    progress.on_scan_started(config.port_count());
-    metrics.on_scan_started(config.port_count());
+    
+    if verbose {
+        println!("\nStarting scan of {} ports...", config.port_count());
+    }
 
-    // Perform scan
-    let results = scanner.scan_all(|result| {
-        progress.on_port_scanned(result);
-        metrics.on_port_scanned(result);
+    // Perform scan with simple progress callback
+    let results = scanner.scan_all(move |result| {
+        if verbose && result.status.is_open() {
+            println!("Found open port: {}", result.port);
+        }
     });
 
     // Calculate duration
     let duration = start_time.elapsed();
     let duration_seconds = duration.as_secs_f64();
 
-    // Notify observers of completion
-    progress.on_scan_completed(&results);
-    metrics.on_scan_completed(&results);
+    // Get metrics from results
+    let total_ports = results.total_ports;
+    let open_ports = results.open_ports;
+    let closed_ports = results.closed_ports;
 
     // Output results based on format
     match output_format {
         port_scanner::cli::OutputFormat::Text => {
-            display_text_results(&results, duration, &metrics);
+            display_text_results(&results, duration, total_ports, open_ports, closed_ports);
         }
         port_scanner::cli::OutputFormat::Json => {
             let report = ScanReport::new(&config, results, duration_seconds);
@@ -150,14 +153,23 @@ fn display_scan_info(config: &ScanConfig) {
 }
 
 /// Display text results
-fn display_text_results(results: &ScanResults, duration: std::time::Duration, metrics: &MetricsCollector) {
+fn display_text_results(
+    results: &ScanResults, 
+    duration: std::time::Duration,
+    total_ports: usize,
+    open_ports: usize,
+    closed_ports: usize
+) {
     println!("\n=== SCAN RESULTS ===");
-    println!("Total Ports: {}", results.total_ports);
-    println!("Open:        {}", results.open_ports);
-    println!("Closed:      {}", results.closed_ports);
+    println!("Total Ports: {}", total_ports);
+    println!("Open:        {}", open_ports);
+    println!("Closed:      {}", closed_ports);
     println!("Filtered:    {}", results.filtered_ports);
     println!("Errors:      {}", results.error_ports);
     println!("\n=== PERFORMANCE ===");
     println!("Duration:    {:.2?}", duration);
-    println!("Speed:       {:.2} ports/sec", metrics.ports_per_second());
+    if duration.as_secs_f64() > 0.0 {
+        let ports_per_sec = total_ports as f64 / duration.as_secs_f64();
+        println!("Speed:       {:.2} ports/sec", ports_per_sec);
+    }
 }

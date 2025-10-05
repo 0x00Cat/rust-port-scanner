@@ -1,34 +1,28 @@
-/// Scan strategy pattern implementation
+/// Scan strategy pattern implementation with async support
 
 use std::net::{SocketAddr, IpAddr};
-use std::io;
+use tokio::net::TcpStream;
+use tokio::time::{timeout, Duration};
+use std::sync::Arc;
 use tracing::{debug, trace};
 
 use crate::domain::{Port, PortStatus, PortScanResult};
 use crate::scanning::config::ScanConfig;
-use crate::infrastructure::{NetworkConnector, TcpConnector, network_utils};
 use crate::application::{VersionDetector, SMBFingerprinter};
 
-/// Trait for different scanning strategies
+/// Trait for different scanning strategies (now async)
+#[async_trait::async_trait]
 pub trait ScanStrategy: Send + Sync {
-    fn scan(&self, port: Port, target_ip: IpAddr, config: &ScanConfig) -> PortScanResult;
+    async fn scan_async(&self, port: Port, target_ip: IpAddr, config: &ScanConfig) -> PortScanResult;
     fn name(&self) -> &'static str;
 }
 
-/// Standard TCP connect scan
-pub struct StandardScan {
-    connector: Box<dyn NetworkConnector>,
-}
+/// Standard TCP connect scan (async)
+pub struct StandardScan;
 
 impl StandardScan {
     pub fn new() -> Self {
-        Self {
-            connector: Box::new(TcpConnector::new()),
-        }
-    }
-
-    pub fn with_connector(connector: Box<dyn NetworkConnector>) -> Self {
-        Self { connector }
+        Self
     }
 }
 
@@ -38,21 +32,23 @@ impl Default for StandardScan {
     }
 }
 
+#[async_trait::async_trait]
 impl ScanStrategy for StandardScan {
-    fn scan(&self, port: Port, target_ip: IpAddr, config: &ScanConfig) -> PortScanResult {
+    async fn scan_async(&self, port: Port, target_ip: IpAddr, config: &ScanConfig) -> PortScanResult {
         let socket = SocketAddr::new(target_ip, port);
         
-        trace!("Standard scanning port {} on {}", port, target_ip);
+        trace!("Async scanning port {} on {}", port, target_ip);
 
-        match self.connector.connect(&socket, config.timeout) {
-            Ok(_) => {
+        // Async TCP connection with timeout
+        match timeout(config.timeout, TcpStream::connect(&socket)).await {
+            Ok(Ok(stream)) => {
                 debug!("Port {} is OPEN", port);
                 let mut result = PortScanResult::new(port, PortStatus::Open);
                 
                 // Perform service version detection if enabled
                 if config.detect_versions {
                     debug!("Service detection enabled - attempting on port {}", port);
-                    let version = VersionDetector::detect_version(&socket, config.timeout);
+                    let version = VersionDetector::detect_version_async(&socket, config.timeout).await;
                     if version.service_name != "Unknown" {
                         let version_str = version.version.as_deref().unwrap_or("unknown version");
                         debug!("Detected service on port {}: {} {}", port, version.service_name, version_str);
@@ -65,7 +61,7 @@ impl ScanStrategy for StandardScan {
                 // Perform OS detection if enabled and port is 445 (SMB)
                 if config.detect_os && port == 445 {
                     debug!("OS detection enabled - attempting SMB fingerprinting on port {}", port);
-                    let os_info = SMBFingerprinter::fingerprint(&socket, config.timeout);
+                    let os_info = SMBFingerprinter::fingerprint_async(&socket, config.timeout).await;
                     if os_info.os_name.as_ref().map_or(false, |n| n != "Unknown") {
                         debug!("OS detected via SMB: {}", os_info.summary());
                         result = result.with_os_info(os_info);
@@ -76,38 +72,28 @@ impl ScanStrategy for StandardScan {
                 
                 result
             }
-            Err(ref e) if network_utils::is_connection_refused(e) => {
+            Ok(Err(_)) => {
                 trace!("Port {} is CLOSED", port);
                 PortScanResult::new(port, PortStatus::Closed)
             }
-            Err(ref e) if network_utils::is_timeout(e) => {
+            Err(_) => {
                 trace!("Port {} is FILTERED (timeout)", port);
                 PortScanResult::new(port, PortStatus::Filtered)
-            }
-            Err(e) => {
-                trace!("Port {} returned ERROR: {}", port, e);
-                PortScanResult::new(port, PortStatus::Error(e.to_string()))
             }
         }
     }
 
     fn name(&self) -> &'static str {
-        "Standard TCP Connect"
+        "Standard TCP Connect (Async)"
     }
-}/// Stealth scan with source port randomization
-pub struct StealthScan {
-    connector: Box<dyn NetworkConnector>,
 }
+
+/// Stealth scan with source port randomization (async)
+pub struct StealthScan;
 
 impl StealthScan {
     pub fn new() -> Self {
-        Self {
-            connector: Box::new(TcpConnector::new()),
-        }
-    }
-
-    pub fn with_connector(connector: Box<dyn NetworkConnector>) -> Self {
-        Self { connector }
+        Self
     }
 }
 
@@ -117,73 +103,21 @@ impl Default for StealthScan {
     }
 }
 
+#[async_trait::async_trait]
 impl ScanStrategy for StealthScan {
-    fn scan(&self, port: Port, target_ip: IpAddr, config: &ScanConfig) -> PortScanResult {
-        let socket = SocketAddr::new(target_ip, port);
-        
-        // Add delay if configured
+    async fn scan_async(&self, port: Port, target_ip: IpAddr, config: &ScanConfig) -> PortScanResult {
+        // Add delay if configured for stealth
         if let Some(delay) = config.delay_between_probes {
-            let jittered_delay = network_utils::random_delay_jitter(
-                delay, 
-                crate::constants::DELAY_JITTER_PERCENT
-            );
-            trace!("Delaying {:?} before scanning port {}", jittered_delay, port);
-            std::thread::sleep(jittered_delay);
+            tokio::time::sleep(delay).await;
         }
-        
-        trace!("Stealth scanning port {} on {}", port, target_ip);
-        
-        // For now, fall back to standard scan
-        // Full implementation would use socket2 crate for source port binding
-        match self.connector.connect(&socket, config.timeout) {
-            Ok(_) => {
-                debug!("Port {} is OPEN (stealth)", port);
-                let mut result = PortScanResult::new(port, PortStatus::Open);
-                
-                // Perform service version detection if enabled
-                if config.detect_versions {
-                    debug!("Service detection enabled - attempting on port {} (stealth)", port);
-                    let version = VersionDetector::detect_version(&socket, config.timeout);
-                    if version.service_name != "Unknown" {
-                        let version_str = version.version.as_deref().unwrap_or("unknown version");
-                        debug!("Detected service on port {}: {} {}", port, version.service_name, version_str);
-                        result = result.with_version(version);
-                    } else {
-                        trace!("No service detected on port {}", port);
-                    }
-                }
-                
-                // Perform OS detection if enabled and port is 445 (SMB)
-                if config.detect_os && port == 445 {
-                    debug!("OS detection enabled - attempting SMB fingerprinting on port {} (stealth)", port);
-                    let os_info = SMBFingerprinter::fingerprint(&socket, config.timeout);
-                    if os_info.os_name.as_ref().map_or(false, |n| n != "Unknown") {
-                        debug!("OS detected via SMB: {}", os_info.summary());
-                        result = result.with_os_info(os_info);
-                    } else {
-                        debug!("OS detection on port {} did not yield results", port);
-                    }
-                }
-                
-                result
-            }
-            Err(ref e) if network_utils::is_connection_refused(e) => {
-                trace!("Port {} is CLOSED", port);
-                PortScanResult::new(port, PortStatus::Closed)
-            }
-            Err(ref e) if network_utils::is_timeout(e) => {
-                trace!("Port {} is FILTERED (timeout)", port);
-                PortScanResult::new(port, PortStatus::Filtered)
-            }
-            Err(e) => {
-                trace!("Port {} returned ERROR: {}", port, e);
-                PortScanResult::new(port, PortStatus::Error(e.to_string()))
-            }
-        }
+
+        // Use standard scan logic (async version)
+        let standard = StandardScan::new();
+        standard.scan_async(port, target_ip, config).await
     }
 
     fn name(&self) -> &'static str {
-        "Stealth TCP Connect"
+        "Stealth Scan (Async)"
     }
 }
 
@@ -191,11 +125,11 @@ impl ScanStrategy for StealthScan {
 pub struct ScanStrategyFactory;
 
 impl ScanStrategyFactory {
-    pub fn create(config: &ScanConfig) -> Box<dyn ScanStrategy> {
-        if config.is_stealth_enabled() {
-            Box::new(StealthScan::new())
+    pub fn create(config: &ScanConfig) -> Arc<dyn ScanStrategy> {
+        if config.randomize_source_port || config.delay_between_probes.is_some() {
+            Arc::new(StealthScan::new())
         } else {
-            Box::new(StandardScan::new())
+            Arc::new(StandardScan::new())
         }
     }
 }

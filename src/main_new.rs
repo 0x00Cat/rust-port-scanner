@@ -103,7 +103,8 @@ enum OutputFormatArg {
     All,
 }
 
-fn main() -> anyhow::Result<()> {
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
     // Parse CLI args early to get debug flag
     let cli = Cli::parse();
     
@@ -169,7 +170,7 @@ fn main() -> anyhow::Result<()> {
         if let Ok(mut metrics) = metrics_clone.lock() {
             metrics.on_port_scanned(&result);
         }
-    });
+    }).await;
 
     // Calculate duration
     let duration = start_time.elapsed();

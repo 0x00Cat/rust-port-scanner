@@ -3,6 +3,9 @@
 use std::net::{SocketAddr, TcpStream};
 use std::io::{Read, Write};
 use std::time::Duration;
+use tokio::net::TcpStream as AsyncTcpStream;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::time::timeout as async_timeout;
 use tracing::{debug, trace, warn};
 
 use crate::domain::{Port, ServiceVersion};
@@ -17,6 +20,45 @@ impl VersionDetector {
         Self
     }
 
+    /// Async version detection (NEW - for async scanning)
+    pub async fn detect_version_async(socket: &SocketAddr, timeout: Duration) -> ServiceVersion {
+        let port = socket.port();
+
+        debug!("Attempting async version detection on port {}", port);
+
+        // Try to connect and grab banner with async
+        match async_timeout(timeout, AsyncTcpStream::connect(socket)).await {
+            Ok(Ok(mut stream)) => {
+                let mut buffer = vec![0u8; BANNER_BUFFER_SIZE];
+
+                // Try reading banner first
+                match async_timeout(
+                    Duration::from_millis(BANNER_READ_TIMEOUT_MS), 
+                    stream.read(&mut buffer)
+                ).await {
+                    Ok(Ok(n)) if n > 0 => {
+                        let banner = String::from_utf8_lossy(&buffer[..n]).to_string();
+                        trace!("Received banner from port {}: {}", port, banner);
+                        return Self::parse_banner(port, &banner);
+                    }
+                    _ => {
+                        // Try sending a probe
+                        return Self::send_probe_and_read_async(port, &mut stream, &mut buffer).await;
+                    }
+                }
+            }
+            Ok(Err(e)) => {
+                warn!("Failed to connect for async version detection on port {}: {}", port, e);
+                ServiceVersion::unknown()
+            }
+            Err(_) => {
+                warn!("Connection timeout for async version detection on port {}", port);
+                ServiceVersion::unknown()
+            }
+        }
+    }
+
+    /// Sync version detection (kept for compatibility)
     pub fn detect_version(socket: &SocketAddr, timeout: Duration) -> ServiceVersion {
         let port = socket.port();
         
@@ -47,6 +89,33 @@ impl VersionDetector {
                 warn!("Failed to connect for version detection on port {}: {}", port, e);
                 ServiceVersion::unknown()
             }
+        }
+    }
+
+    async fn send_probe_and_read_async(port: Port, stream: &mut AsyncTcpStream, buffer: &mut [u8]) -> ServiceVersion {
+        let probe: &[u8] = match port {
+            80 | 8080 | 8443 => b"GET / HTTP/1.0\r\n\r\n",
+            21 => b"",  // FTP sends banner automatically
+            22 => b"",  // SSH sends banner automatically
+            25 => b"EHLO scanner\r\n",
+            _ => b"",
+        };
+
+        if !probe.is_empty() {
+            trace!("Sending async probe to port {}", port);
+            let _ = stream.write_all(probe).await;
+        }
+
+        match async_timeout(
+            Duration::from_millis(BANNER_READ_TIMEOUT_MS),
+            stream.read(buffer)
+        ).await {
+            Ok(Ok(n)) if n > 0 => {
+                let banner = String::from_utf8_lossy(&buffer[..n]).to_string();
+                trace!("Received async response from port {}: {}", port, banner);
+                Self::parse_banner(port, &banner)
+            }
+            _ => ServiceVersion::unknown(),
         }
     }
 

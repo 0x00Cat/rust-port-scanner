@@ -1,61 +1,73 @@
-/// Parallel scanning implementation using rayon
+/// Async parallel scanning implementation using tokio
 
-use rayon::prelude::*;
+use tokio::task::JoinSet;
+use tokio::sync::Semaphore;
+use std::sync::Arc;
 use tracing::{info, debug};
 
 use crate::domain::{Port, PortScanResult};
 use crate::scanning::config::ScanConfig;
 use crate::scanning::strategy::ScanStrategy;
 
-/// Parallel scanning executor
+/// Async parallel scanning executor with concurrency control
 pub struct ParallelExecutor {
-    thread_count: usize,
+    max_concurrent: usize,
 }
 
 impl ParallelExecutor {
-    pub fn new(thread_count: usize) -> Self {
-        Self { thread_count }
+    pub fn new(max_concurrent: usize) -> Self {
+        // Limit concurrency to reasonable bounds
+        let max_concurrent = max_concurrent.min(2000).max(10);
+        Self { max_concurrent }
     }
 
-    pub fn scan_ports<F>(
+    pub async fn scan_ports<F>(
         &self,
         ports: Vec<Port>,
-        strategy: &(dyn ScanStrategy + Sync),
+        strategy: Arc<dyn ScanStrategy + Send + Sync>,
         config: &ScanConfig,
-        mut callback: F,
+        callback: F,
     ) -> Vec<PortScanResult>
     where
-        F: FnMut(&PortScanResult) + Send,
+        F: Fn(&PortScanResult) + Send + Sync + 'static,
     {
-        info!("Starting parallel scan with {} threads", self.thread_count);
+        info!("Starting async parallel scan with max {} concurrent tasks", self.max_concurrent);
         
-        // Configure rayon thread pool
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(self.thread_count)
-            .build()
-            .expect("Failed to create thread pool");
+        let semaphore = Arc::new(Semaphore::new(self.max_concurrent));
+        let mut set = JoinSet::new();
+        let callback = Arc::new(callback);
+        let config = Arc::new(config.clone());
 
-        // Use thread pool to scan ports
-        let results: Vec<PortScanResult> = pool.install(|| {
-            ports.par_iter()
-                .map(|&port| {
-                    debug!("Scanning port {}", port);
-                    strategy.scan(port, config.target_ip, config)
-                })
-                .collect()
-        });
+        // Spawn async tasks for each port
+        for port in ports {
+            let permit = semaphore.clone().acquire_owned().await.unwrap();
+            let strategy = Arc::clone(&strategy);
+            let config = Arc::clone(&config);
+            let callback = Arc::clone(&callback);
 
-        // Call callback for each result
-        for result in &results {
-            callback(result);
+            set.spawn(async move {
+                debug!("Scanning port {}", port);
+                let result = strategy.scan_async(port, config.target_ip, &config).await;
+                callback(&result);
+                drop(permit); // Release semaphore
+                result
+            });
         }
 
-        info!("Parallel scan completed. Scanned {} ports", results.len());
+        // Collect results
+        let mut results = Vec::new();
+        while let Some(res) = set.join_next().await {
+            if let Ok(result) = res {
+                results.push(result);
+            }
+        }
+
+        info!("Async parallel scan completed. Scanned {} ports", results.len());
         results
     }
 }
 
-/// Sequential scanning executor
+/// Sequential scanning executor (also async for consistency)
 pub struct SequentialExecutor;
 
 impl SequentialExecutor {
@@ -63,15 +75,15 @@ impl SequentialExecutor {
         Self
     }
 
-    pub fn scan_ports<F>(
+    pub async fn scan_ports<F>(
         &self,
         ports: Vec<Port>,
-        strategy: &dyn ScanStrategy,
+        strategy: Arc<dyn ScanStrategy + Send + Sync>,
         config: &ScanConfig,
-        mut callback: F,
+        callback: F,
     ) -> Vec<PortScanResult>
     where
-        F: FnMut(&PortScanResult),
+        F: Fn(&PortScanResult),
     {
         info!("Starting sequential scan");
         
@@ -79,11 +91,11 @@ impl SequentialExecutor {
         
         for port in ports {
             debug!("Scanning port {}", port);
-            let result = strategy.scan(port, config.target_ip, config);
+            let result = strategy.scan_async(port, config.target_ip, config).await;
             callback(&result);
             results.push(result);
         }
-
+        
         info!("Sequential scan completed. Scanned {} ports", results.len());
         results
     }

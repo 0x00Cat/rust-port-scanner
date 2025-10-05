@@ -1,0 +1,46 @@
+# .dockerignore
+
+# Git
+.git
+.gitignore
+.github
+
+# Rust
+target/
+Cargo.lock
+
+# Documentation
+*.md
+docs/
+*.txt
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test files
+tests/fixtures/
+benches/
+
+# Temporary files
+*.tmp
+*.log
+*.bak
+
+# Build artifacts
+*.o
+*.so
+*.dylib
+*.dll
+*.exe

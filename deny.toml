@@ -1,0 +1,71 @@
+# Cargo deny configuration
+# https://embarkstudios.github.io/cargo-deny/
+
+[advisories]
+# The path where the advisory database is cloned/fetched into
+db-path = "~/.cargo/advisory-db"
+# The url(s) of the advisory databases to use
+db-urls = ["https://github.com/rustsec/advisory-db"]
+# Lint level for security vulnerabilities
+vulnerability = "deny"
+# Lint level for unmaintained crates
+unmaintained = "warn"
+# Lint level for crates with security notices
+notice = "warn"
+# Ignore specific advisories
+ignore = [
+    # Add advisory IDs to ignore here
+    # "RUSTSEC-2020-0001",
+]
+
+[licenses]
+# Lint level for unlicensed crates
+unlicensed = "deny"
+# Allow specific licenses
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-DFS-2016",
+]
+# Deny specific licenses
+deny = [
+    "GPL-3.0",
+    "AGPL-3.0",
+]
+# Warn on copyleft licenses
+copyleft = "warn"
+# Allow OSI/FSF approved licenses
+allow-osi-fsf-free = "both"
+# Confidence threshold for license detection
+confidence-threshold = 0.8
+
+[bans]
+# Lint level for multiple versions of the same crate
+multiple-versions = "warn"
+# Lint level for wildcard dependencies
+wildcards = "warn"
+# Allow specific crates
+allow = []
+# Deny specific crates
+deny = [
+    # Deny old versions with known vulnerabilities
+    { name = "openssl", version = "<0.10" },
+]
+# Skip checking certain crates
+skip = []
+# Skip checking certain trees
+skip-tree = []
+
+[sources]
+# Lint level for unknown sources
+unknown-registry = "deny"
+# Lint level for unknown git sources
+unknown-git = "warn"
+# Allow git sources from specific domains
+allow-git = [
+    "https://github.com/",
+]

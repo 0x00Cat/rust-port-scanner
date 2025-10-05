@@ -1,0 +1,56 @@
+# Docker Compose for Port Scanner
+
+version: '3.8'
+
+services:
+  port-scanner:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: port-scanner:latest
+    container_name: port-scanner
+    
+    # Network mode for scanning
+    network_mode: host
+    
+    # Environment variables
+    environment:
+      - RUST_LOG=info
+      - RUST_BACKTRACE=1
+    
+    # Volume for output files
+    volumes:
+      - ./scans:/home/scanner/scans:rw
+    
+    # Security options
+    security_opt:
+      - no-new-privileges:true
+    
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 512M
+        reservations:
+          cpus: '1.0'
+          memory: 256M
+    
+    # Restart policy
+    restart: unless-stopped
+    
+    # Command (override as needed)
+    # Example: docker-compose run port-scanner 127.0.0.1 -p 80,443
+    command: ["--help"]
+
+  # Test target (nginx server for testing)
+  test-target:
+    image: nginx:alpine
+    container_name: test-target
+    ports:
+      - "8080:80"
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
